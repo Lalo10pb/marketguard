@@ -66,15 +66,21 @@ def run_analysis():
     with open("results.json", "r") as f:
         items = json.load(f)
 
+        # Limit & sort for faster first pass (cheapest first)
+        limit = int(os.getenv("ANALYZE_LIMIT", "60"))
+        items = sorted(items, key=lambda it: float(it.get("price") or 0))
+        items = items[:limit]
+        total = len(items)
+
     report = []
-    for item in items:
+    for idx, item in enumerate(items, 1):
         title = item.get("title", "(no title)")
         buying_options = set(item.get("buying_options", []))
         if "AUCTION" in buying_options and "FIXED_PRICE" not in buying_options:
             print(f"⏩ Skipping auction-only listing: {title}")
             continue
 
-        print(f"🔎 Analyzing: {title}")
+        print(f"🔎 [{idx}/{total}] {title}")
         result = analyze_item(item)
         result["category"] = item.get("category", "Unknown")
         report.append(result)

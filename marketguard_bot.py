@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import datetime
 
 import random
+import subprocess
 
 # Helpers to inspect environment variables at runtime
 def get_env(key, default=""):
@@ -136,7 +137,20 @@ if __name__ == "__main__":
 
     use_api = bool(os.getenv("EBAY_CLIENT_ID") and os.getenv("EBAY_CLIENT_SECRET"))
     if use_api:
-        os.system("python3 ebay_scraper.py")
+        try:
+            proc = subprocess.run(["python3", "ebay_scraper.py"], capture_output=True, text=True, timeout=300)
+            combined = f"{proc.stdout}\n{proc.stderr}".strip()
+            if (proc.returncode != 0) or ("OAuth" in combined) or ("invalid_client" in combined) or ("Cannot proceed without eBay access token" in combined):
+                print("ℹ️ eBay scan failed — skipping fresh scan and using existing results.json")
+                if combined:
+                    print(combined)
+            else:
+                if proc.stdout:
+                    print(proc.stdout, end="")
+                if proc.stderr:
+                    print(proc.stderr, end="")
+        except Exception as e:
+            print(f"ℹ️ eBay scan error — skipping fresh scan and using existing results.json: {e}")
     else:
         print("ℹ️ EBAY keys not set — skipping eBay scan and using existing results.json")
 
