@@ -1,0 +1,10 @@
+cat > .gitignore << 'EOF'
+.venv/
+__pycache__/
+*.pyc
+logs/
+mercari_cache.json
+results.json
+flip_report.json
+.marketguard_env
+EOF
