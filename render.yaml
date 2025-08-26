@@ -1,0 +1,15 @@
+cronJobs:
+  - name: marketguard-daily
+    schedule: "0 14,23 * * *"        
+    env: python
+    buildCommand: pip install -r requirements.txt
+    command: python marketguard_bot.py
+    envVars:
+      - key: EBAY_CLIENT_ID
+        sync: false
+      - key: EBAY_CLIENT_SECRET
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
