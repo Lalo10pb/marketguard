@@ -3,47 +3,58 @@ import time
 from mercari_scraper import get_mercari_resale_data
 import os
 
-# Constants
-MIN_VOLUME = 10         # 🔐 Minimum 10 units sold
-MIN_PROFIT = 20.0       # 💰 At least $20 profit to flip
-FEES_PERCENT = 0.13     # Mercari fees (~10% + shipping buffer)
+# Tunable thresholds via environment variables (fallbacks shown)
+MIN_VOLUME = int(os.getenv("MIN_VOLUME_30D", os.getenv("MIN_VOLUME", "10")))
+MIN_PROFIT = float(os.getenv("MIN_PROFIT", "20"))
+MIN_ROI_PCT = float(os.getenv("MIN_ROI_PCT", "20"))
+FEES_PERCENT = float(os.getenv("FEES_PERCENT", "0.13"))  # ~10% fee + ship buffer
+
+# Near-miss tuning (for logging/inspection only)
+NEAR_MISS_DOLLARS = float(os.getenv("NEAR_MISS_DOLLARS", "5"))
+NEAR_MISS_ROI_PCT = float(os.getenv("NEAR_MISS_ROI_PCT", "5"))
 
 def analyze_item(item):
     title = item["title"]
     buy_price = item["price"]
 
     resale_data = get_mercari_resale_data(title)
-    if resale_data["volume_30d"] < MIN_VOLUME:
+    avg_resale = resale_data.get("avg_resale_price", 0.0)
+    volume = resale_data.get("volume_30d", 0)
+
+    # Guard: no resale signal
+    if avg_resale == 0.0 or volume == 0:
         return {
             "title": title,
             "buy_price": buy_price,
-            "avg_resale": resale_data["avg_resale_price"],
-            "volume": resale_data["volume_30d"],
+            "avg_resale": avg_resale,
+            "volume": volume,
             "estimated_profit": 0.0,
             "roi_percent": 0.0,
             "flip": False,
+            "near_miss": False,
+            "near_miss_reasons": [],
             "url": item["url"],
             "category": item.get("category", "Unknown")
         }
-    if resale_data["avg_resale_price"] == 0.0 or resale_data["volume_30d"] < MIN_VOLUME:
-        return {
-            "title": title,
-            "buy_price": buy_price,
-            "avg_resale": resale_data["avg_resale_price"],
-            "volume": resale_data["volume_30d"],
-            "estimated_profit": 0.0,
-            "roi_percent": 0.0,
-            "flip": False,
-            "url": item["url"]
-        }
 
-    avg_resale = resale_data["avg_resale_price"]
-    volume = resale_data["volume_30d"]
-
+    # Economics
     estimated_profit = round(avg_resale * (1 - FEES_PERCENT) - buy_price, 2)
-    roi = round(estimated_profit / buy_price * 100, 1) if buy_price > 0 else 0
+    roi = round((estimated_profit / buy_price * 100), 1) if buy_price > 0 else 0.0
 
-    flip = volume >= MIN_VOLUME and estimated_profit >= MIN_PROFIT
+    # Flip decision based on thresholds
+    flip = (volume >= MIN_VOLUME) and (estimated_profit >= MIN_PROFIT) and (roi >= MIN_ROI_PCT)
+
+    # Near-miss logic for visibility (not a flip)
+    near_miss = False
+    reasons = []
+    if not flip and volume >= max(1, MIN_VOLUME - 1):
+        if estimated_profit >= (MIN_PROFIT - NEAR_MISS_DOLLARS):
+            near_miss = True
+            reasons.append(f"profit within ${NEAR_MISS_DOLLARS} of min")
+        if roi >= (MIN_ROI_PCT - NEAR_MISS_ROI_PCT):
+            near_miss = True
+            reasons.append(f"ROI within {NEAR_MISS_ROI_PCT}% of min")
+
     item["category"] = item.get("category", "Unknown")
 
     return {
@@ -54,6 +65,8 @@ def analyze_item(item):
         "estimated_profit": estimated_profit,
         "roi_percent": roi,
         "flip": flip,
+        "near_miss": near_miss,
+        "near_miss_reasons": reasons,
         "url": item["url"],
         "category": item.get("category", "Unknown")
     }

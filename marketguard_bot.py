@@ -63,6 +63,9 @@ def build_daily_summary(report_path: str = "flip_report.json", results_path: str
     except Exception:
         report = []
 
+    # Near-misses (close to thresholds but not flips)
+    near_misses = [r for r in report if isinstance(r, dict) and r.get("near_miss") and not r.get("flip")]
+
     # Count skipped auctions from raw results
     skipped_auctions = 0
     try:
@@ -81,7 +84,7 @@ def build_daily_summary(report_path: str = "flip_report.json", results_path: str
     # Build summary message
     lines = []
     lines.append("📊 *MarketGuard Daily Summary*")
-    lines.append(f"Analyzed: {analyzed} | Skipped auctions: {skipped_auctions} | Flips: {len(flips)}")
+    lines.append(f"Analyzed: {analyzed} | Skipped auctions: {skipped_auctions} | Flips: {len(flips)} | Near-misses: {len(near_misses)}")
 
     if flips:
         # Top 5 by estimated profit
@@ -108,6 +111,36 @@ def build_daily_summary(report_path: str = "flip_report.json", results_path: str
                 profit_s = str(profit)
             link = f" [Buy]({url})" if url else ""
             lines.append(f"{i}) ${buy_s} → ${resale_s} (profit ~${profit_s}) – {title}{link}")
+
+    # Optional near-miss section (can disable with NEAR_MISS_TELEGRAM=0)
+    if near_misses and os.getenv("NEAR_MISS_TELEGRAM", "1") != "0":
+        lines.append("")
+        lines.append("*Near misses (close calls):*")
+        top_nm = sorted(near_misses, key=lambda r: (r.get("estimated_profit") or r.get("profit_estimate") or 0), reverse=True)[:5]
+        for i, x in enumerate(top_nm, 1):
+            buy = x.get("buy_price")
+            resale = x.get("avg_resale") or x.get("avg_resale_price")
+            profit = x.get("estimated_profit") or x.get("profit_estimate")
+            roi = x.get("roi_percent")
+            title = x.get("title", "(no title)")
+            url = x.get("url") or x.get("buy_url") or ""
+            reasons = ", ".join(x.get("near_miss_reasons", [])) or ""
+            try:
+                buy_s = f"{float(buy):.2f}" if buy is not None else "-"
+            except Exception:
+                buy_s = str(buy)
+            try:
+                resale_s = f"{float(resale):.2f}" if resale is not None else "-"
+            except Exception:
+                resale_s = str(resale)
+            try:
+                profit_s = f"{float(profit):.2f}" if profit is not None else "-"
+            except Exception:
+                profit_s = str(profit)
+            roi_s = f"{float(roi):.1f}%" if isinstance(roi, (int, float)) else (f"{roi}%" if roi else "-")
+            link = f" [View]({url})" if url else ""
+            reason_text = f" — _{reasons}_" if reasons else ""
+            lines.append(f"{i}) ${buy_s} → ${resale_s} (profit ~${profit_s}, ROI {roi_s}) – {title}{link}{reason_text}")
 
     return "\n".join(lines)
 
