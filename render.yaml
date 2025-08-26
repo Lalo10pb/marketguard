@@ -1,9 +1,11 @@
-cronJobs:
-  - name: marketguard-daily
-    schedule: "0 14,23 * * *"        
-    env: python
+services:
+  - type: cron
+    name: marketguard-daily
+    runtime: python
+    plan: starter                 # $7/mo tier; cron jobs can’t be free
+    schedule: "0 14,23 * * *"     # UTC → ~9:00 & 18:00 Chicago (DST)
     buildCommand: pip install -r requirements.txt
-    command: python marketguard_bot.py
+    startCommand: python marketguard_bot.py
     envVars:
       - key: EBAY_CLIENT_ID
         sync: false
