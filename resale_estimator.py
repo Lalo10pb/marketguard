@@ -1,5 +1,6 @@
 import json
 import time
+import re
 from mercari_scraper import get_mercari_resale_data
 import os
 
@@ -9,15 +10,90 @@ MIN_PROFIT = float(os.getenv("MIN_PROFIT", "20"))
 MIN_ROI_PCT = float(os.getenv("MIN_ROI_PCT", "20"))
 FEES_PERCENT = float(os.getenv("FEES_PERCENT", "0.13"))  # ~10% fee + ship buffer
 
+
 # Near-miss tuning (for logging/inspection only)
 NEAR_MISS_DOLLARS = float(os.getenv("NEAR_MISS_DOLLARS", "5"))
 NEAR_MISS_ROI_PCT = float(os.getenv("NEAR_MISS_ROI_PCT", "5"))
+
+
+# Helper: normalize eBay title to a tight Mercari search query
+def to_search_query(title: str) -> str:
+    """Normalize an eBay title into a tight Mercari search query (brand + model)."""
+    t = title.lower()
+
+    # Canonicalize brand names
+    brand_aliases = {
+        "de walt": "dewalt",
+        "dewalt": "dewalt",
+        "milwaukee": "milwaukee",
+        "makita": "makita",
+        "ryobi": "ryobi",
+        "bosch": "bosch",
+        "fluke": "fluke",
+        "klein": "klein",
+        "leatherman": "leatherman",
+        "craftsman": "craftsman",
+        "snap-on": "snap-on",
+        "snap on": "snap-on",
+        "snapon": "snap-on",
+    }
+    brand = None
+    for k, v in brand_aliases.items():
+        if k in t:
+            brand = v
+            break
+
+    # Strip fluff that hurts search quality
+    fluff_patterns = [
+        r"\btool\s*only\b", r"\bbare\s*tool\b", r"\bno\s*batter(y|ies)\b",
+        r"\bno\s*charger\b", r"\btested\b", r"\bworks?\b", r"\bworking\b",
+        r"\bfree\s*shipping\b", r"\bwith\b.*", r"\bw\/\b.*",
+        r"\bcase\b", r"\bbag\b", r"\bholder\b", r"\badapter\b", r"\battachment\b",
+        r"\btray\b", r"\binsert\b", r"\bbundle\b", r"\bkit\b", r"\bset\b",
+        r"\bparts?\b", r"\bfor\s*parts\b", r"\bas-?is\b",
+    ]
+    for p in fluff_patterns:
+        t = re.sub(p, " ", t)
+
+    # Remove capacity tokens like "5.0Ah" or "9Ah"
+    t = re.sub(r"\b\d+(\.\d+)?\s*ah\b", " ", t)
+
+    # Simplify punctuation/whitespace
+    t = re.sub(r"[/|,]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # Extract model-style tokens
+    tokens = []
+    patterns = [
+        r"\b\d{3,4}-\d{2}\b",     # 2801-20, 3601-20
+        r"\b[a-z]{2,}\d{2,}\b",   # dcf887, xdt15, btd142
+        r"\b\d{2,}[a-z]{1,}\b",   # 117c, 9557pb
+        r"\b\d{3,}\b",            # 117, 2801
+        r"\bbl\d{4}\w*\b",       # bl1850b
+    ]
+    for pat in patterns:
+        tokens += re.findall(pat, t)
+
+    # Deduplicate while preserving order
+    seen = set()
+    models = [x for x in tokens if not (x in seen or seen.add(x))]
+
+    if brand and models:
+        return f"{brand} " + " ".join(models[:3])
+    if brand:
+        return brand
+    if models:
+        return " ".join(models[:3])
+
+    # Fallback: top words from cleaned title
+    return " ".join(t.split()[:5])
 
 def analyze_item(item):
     title = item["title"]
     buy_price = item["price"]
 
-    resale_data = get_mercari_resale_data(title)
+    query = to_search_query(title)
+    resale_data = get_mercari_resale_data(query)
     avg_resale = resale_data.get("avg_resale_price", 0.0)
     volume = resale_data.get("volume_30d", 0)
 
