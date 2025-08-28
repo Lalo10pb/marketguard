@@ -20,6 +20,8 @@ CLOUD = os.getenv("MG_CLOUD", "0") == "1"
 REQUEST_TIMEOUT = 30 if CLOUD else 20
 RETRY_ATTEMPTS = 4 if CLOUD else 2
 BASE_DELAY = 1.2 if CLOUD else 0.5
+SHOW_QUERY_LOGS = os.getenv("SHOW_QUERY_LOGS", "0") == "1"
+EXCLUDE_BATTERIES = os.getenv("EXCLUDE_BATTERIES", "0") == "1"
 
 CACHE_FILE = "mercari_cache.json"
 CACHE_TTL_HOURS = 24
@@ -141,7 +143,8 @@ ACCESSORY_TERMS = [
     "holder", "bit holder", "bit set", "flex shaft", "attachment",
     "adapter", "battery adapter", "mount", "strap",
     "organizer", "insert tray", "tray insert", "insert organizer", "insert for",
-    "replacement housing", "replacement shell"
+    "replacement housing", "replacement shell",
+    "handle", "grip", "replacement", "gear box", "gearbox", "hammer case", "assembly", "assy"
 ]
 
 BAD_TERMS = [
@@ -167,6 +170,9 @@ def _is_quality_title_mercari(title: str) -> bool:
     if " for " in t and any(f"for {b}" in t for b in BRAND_WHITELIST) and any(w in t for w in [
         "case", "cover", "adapter", "holder", "holster", "mount", "strap", "sticker", "skin", "decal", "wrap", "organizer", "tray", "insert"
     ]):
+        return False
+    # optional global battery-only skip (unless clearly part of a kit)
+    if EXCLUDE_BATTERIES and re.search(r'\bbatter(?:y|ies)\b', t) and not re.search(r'\b(kit|combo|with\s*charger|w/?\s*charger|tool\s*kit)\b', t):
         return False
     return True
 
@@ -216,6 +222,8 @@ def scan_mercari_live(keyword: str, max_pages: int = 1, min_price: float = None,
             min_price, max_price = max_price, min_price
 
         pages = max(1, int(max_pages or 1))
+        if SHOW_QUERY_LOGS:
+            print(f"🛍️ Mercari live scan: keyword='{keyword}', pages={pages}, price=[{min_price}, {max_price}]")
         out = []
         for pg in range(1, pages + 1):
             search_url = f"https://www.mercari.com/search/?keyword={keyword.replace(' ', '%20')}&status=on_sale&page={pg}"
@@ -236,7 +244,9 @@ def scan_mercari_live(keyword: str, max_pages: int = 1, min_price: float = None,
 
             soup = BeautifulSoup(response.text, 'html.parser')
             cards = soup.select('li[data-testid="item-cell"]')
+            page_seen = page_kept = page_skipped = 0
             for card in cards:
+                page_seen += 1
                 title_tag = card.select_one('[data-testid="item-name"]') or card.select_one('a[title]')
                 price_tag = card.select_one('div[data-testid="item-price"]')
                 link_tag = card.select_one('a[href]')
@@ -248,8 +258,10 @@ def scan_mercari_live(keyword: str, max_pages: int = 1, min_price: float = None,
                 except Exception:
                     continue
                 if price < min_price or price > max_price:
+                    page_skipped += 1
                     continue
                 if not _is_brand_ok(title) or not _is_quality_title_mercari(title):
+                    page_skipped += 1
                     continue
                 url = link_tag.get("href", "")
                 if url and url.startswith("/"):
@@ -270,7 +282,10 @@ def scan_mercari_live(keyword: str, max_pages: int = 1, min_price: float = None,
                     "resale_hint": resale,
                     "scanned_at": datetime.utcnow().isoformat()
                 })
+                page_kept += 1
 
+            if SHOW_QUERY_LOGS:
+                print(f"🛍️ Mercari p{pg}: seen={page_seen}, kept={page_kept}, skipped={page_skipped}")
             # be nice between pages
             time.sleep(BASE_DELAY)
         return out

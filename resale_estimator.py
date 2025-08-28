@@ -93,9 +93,16 @@ def analyze_item(item):
     buy_price = item["price"]
 
     query = to_search_query(title)
+    if os.getenv("SHOW_QUERY_LOGS", "0") != "0":
+        print(f"    → Query: {query}")
     resale_data = get_mercari_resale_data(query)
     avg_resale = resale_data.get("avg_resale_price", 0.0)
     volume = resale_data.get("volume_30d", 0)
+    if os.getenv("SHOW_QUERY_LOGS", "0") == "2":
+        try:
+            print(f"    → Resale: avg=${avg_resale:.2f}, vol={volume}")
+        except Exception:
+            print(f"    → Resale: avg={avg_resale}, vol={volume}")
 
     # Guard: no resale signal
     if avg_resale == 0.0 or volume == 0:

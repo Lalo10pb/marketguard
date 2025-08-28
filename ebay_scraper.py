@@ -29,6 +29,9 @@ _extra_brands = os.getenv("BRAND_WHITELIST_EXTRA", "").strip()
 if _extra_brands:
     BRAND_WHITELIST.extend([s.strip().lower() for s in _extra_brands.split(",") if s.strip()])
 
+# Extra API-level discard patterns (belt-and-suspenders in addition to is_quality_title)
+GENERIC_BATTERY_RE = re.compile(r"\b(?:\d+(?:\.\d+)?\s*ah|[234]pack)\b.*\bfor\s+(?:" + "|".join(BRAND_WHITELIST) + r")\b.*\bbattery\b", re.I)
+PARTS_AI_RE = re.compile(r"\bparts\s*ai\d+\b", re.I)
 
 def get_ebay_access_token():
     client_id = os.getenv("EBAY_CLIENT_ID")
@@ -88,6 +91,25 @@ def is_quality_title(title: str) -> bool:
         ]):
             return False
 
+    # Generic/aftermarket battery filter: drop non-OEM "for <brand>" batteries
+    oem_tokens = ["oem", "genuine", "original", "authentic", "factory"]
+
+    # e.g., "9.0Ah For RYOBI P108 18V High Capacity Battery ...", "2PACK ... For RYOBI 18V Battery ..."
+    has_for_brand = any(f"for {b}" in t for b in BRAND_WHITELIST)
+    has_battery = "battery" in t
+    has_capacity = bool(re.search(r"\b\d+(\.\d+)?\s*ah\b", t))
+
+    if has_battery and has_for_brand and not any(tok in t for tok in oem_tokens):
+        return False
+    if has_battery and has_for_brand and has_capacity and not any(tok in t for tok in oem_tokens):
+        return False
+    if has_battery and has_for_brand and ("compatible with" in t or t.startswith("compatible with") or "fits " in t):
+        return False
+
+    # Drop eBay liquidation shorthand like "Parts Ai32", "Parts Ai39" etc.
+    if re.search(r"\bparts\s*ai\d+\b", t):
+        return False
+
     # Enforce brand whitelist: title must mention an approved brand
     if not any(b in t for b in BRAND_WHITELIST):
         return False
@@ -97,11 +119,47 @@ def is_quality_title(title: str) -> bool:
 
 def search_ebay_api(query, token, limit=50):
     url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+    # Build price window from env (defaults 15..300)
+    try:
+        min_price = int(os.getenv("MIN_PRICE", "15"))
+    except Exception:
+        min_price = 15
+    try:
+        max_price = int(os.getenv("MAX_PRICE", "300"))
+    except Exception:
+        max_price = 300
+
+    # Optional shipping ceiling (treat missing as unlimited)
+    try:
+        max_shipping = float(os.getenv("MAX_SHIPPING", ""))
+    except Exception:
+        max_shipping = None
+    if max_shipping is not None and max_shipping < 0:
+        max_shipping = None
+
+    # Ensure sane order
+    if max_price < min_price:
+        min_price, max_price = max_price, min_price
+
+    price_filter = f"price:[{min_price}..{max_price}]"
+
+    filter_str = (
+        "buyingOptions:{FIXED_PRICE|BEST_OFFER|AUCTION},"
+        f"{price_filter},"
+        "conditions:{NEW|USED|OPEN_BOX|CERTIFIED_REFURBISHED|SELLER_REFURBISHED},"
+        "itemLocationCountry:US"
+    )
+
+    # Optional debug logging
+    if os.getenv("QUERY_LOG", "0") == "1":
+        print(f"🔎 API search '{query}' | {price_filter} | limit={limit}")
+
     params = {
         "q": query,
         "limit": str(limit),
         "sort": "newlyListed",
-        "filter": "buyingOptions:{FIXED_PRICE|BEST_OFFER|AUCTION},price:[15..300],conditions:{NEW|USED|OPEN_BOX|CERTIFIED_REFURBISHED|SELLER_REFURBISHED},itemLocationCountry:US"
+        "filter": filter_str,
+        "fieldgroups": "EXTENDED",
     }
     headers = {
         "Authorization": f"Bearer {token}",
@@ -126,6 +184,12 @@ def search_ebay_api(query, token, limit=50):
         if not (price_val and title and weburl):
             continue
 
+        # API-level prefilter (some noisy titles sneak past otherwise)
+        t = title.lower()
+        if GENERIC_BATTERY_RE.search(t) or PARTS_AI_RE.search(t):
+            # print(f"⏩ API filter: dropping noisy battery/parts listing: {title}")
+            continue
+
         # Quality gate: drop junk/parts-only/etc.
         if not is_quality_title(title):
             continue
@@ -140,6 +204,24 @@ def search_ebay_api(query, token, limit=50):
         except Exception:
             continue
 
+        # Extract shipping cost (requires fieldgroups=EXTENDED)
+        shipping_cost = None
+        ship_opts = it.get("shippingOptions") or []
+        for opt in ship_opts:
+            sc = (opt or {}).get("shippingCost", {}).get("value")
+            try:
+                if sc is not None:
+                    sc = float(sc)
+                    shipping_cost = sc if shipping_cost is None else min(shipping_cost, sc)
+            except Exception:
+                pass
+
+        # If a shipping ceiling is configured, drop items that exceed it (when known)
+        if max_shipping is not None and shipping_cost is not None and shipping_cost > max_shipping:
+            continue
+
+        total_price = price + (shipping_cost or 0.0)
+
         is_auction = ("AUCTION" in opts and "FIXED_PRICE" not in opts)
 
         seen_urls.add(weburl)
@@ -152,7 +234,9 @@ def search_ebay_api(query, token, limit=50):
             "condition": it.get("condition"),
             "scanned_at": datetime.now().isoformat(),
             "buying_options": opts,
-            "is_auction": is_auction
+            "is_auction": is_auction,
+            "shipping_cost": shipping_cost,
+            "total_price": total_price
         })
     return results
 
