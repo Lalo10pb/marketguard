@@ -19,6 +19,16 @@ CATEGORIES = [
     "Leatherman Multi Tool"
 ]
 
+# Brand whitelist — only accept listings that mention at least one of these
+BRAND_WHITELIST = [
+    "milwaukee", "dewalt", "makita", "ryobi", "bosch", "fluke",
+    "klein", "leatherman", "craftsman", "snap-on", "snap on", "snapon"
+]
+# Optional: extend via env var BRAND_WHITELIST_EXTRA="ridgid, dremel, metabo"
+_extra_brands = os.getenv("BRAND_WHITELIST_EXTRA", "").strip()
+if _extra_brands:
+    BRAND_WHITELIST.extend([s.strip().lower() for s in _extra_brands.split(",") if s.strip()])
+
 
 def get_ebay_access_token():
     client_id = os.getenv("EBAY_CLIENT_ID")
@@ -43,18 +53,47 @@ def get_ebay_access_token():
     return r.json().get("access_token")
 
 def is_quality_title(title: str) -> bool:
-    """Return True if the title looks like a real, sellable item (not parts-only, broken, skins, etc.)."""
+    """Return True if the title looks like a real, sellable item (not parts-only, broken, or accessories)."""
     t = title.lower()
+
+    # Obvious junk / broken / parts-only
     bad_terms = [
         "for parts", "parts only", "as-is", "as is", "not working", "doesn't work", "does not work",
         "broken", "defective", "faulty", "no power", "untested", "shell", "housing", "sticker",
-        "skin", "decal", "wrap", "vinyl", "case only", "bag only", "cover only", "faceplate",
-        "bezel", "repair", "spares", "scrap", "junk", "damaged"
+        "skin", "decal", "wrap", "vinyl", "faceplate", "bezel", "repair", "spares", "scrap", "junk", "damaged",
+        # Frequently accessory-only phrases we never want
+        "case only", "bag only", "cover only"
     ]
-    # Allow common legit phrases
-    # (we are not excluding these; they are not in bad_terms)
-    # e.g., "bare tool", "tool only" often indicate legit listings without batteries/charger
-    return not any(b in t for b in bad_terms)
+
+    # Accessory keywords that typically aren't flips
+    accessory_terms = [
+        "hard case", "carrying case", "travel case", "case for ",
+        "bag", "pouch", "holster",
+        "cover", "sleeve",
+        "holder", "bit holder", "bit set", "flex shaft", "right angle flex shaft",
+        "attachment", "adapter", "battery adapter", "mount", "strap",
+        "organizer", "insert tray", "tray insert", "insert organizer", "insert for",
+        "replacement housing", "replacement shell"
+    ]
+
+    if any(b in t for b in bad_terms):
+        return False
+    if any(a in t for a in accessory_terms):
+        return False
+
+    # Heuristic: third‑party accessories with "for <brand>" + accessory word
+    if " for " in t:
+        if any(f"for {b}" in t for b in BRAND_WHITELIST) and any(w in t for w in [
+            "case", "cover", "adapter", "holder", "holster", "mount", "strap", "sticker", "skin", "decal", "wrap", "organizer", "tray", "insert"
+        ]):
+            return False
+
+    # Enforce brand whitelist: title must mention an approved brand
+    if not any(b in t for b in BRAND_WHITELIST):
+        return False
+
+    # Allow legit phrases like "bare tool" / "tool only" (not an accessory)
+    return True
 
 def search_ebay_api(query, token, limit=50):
     url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -82,6 +121,8 @@ def search_ebay_api(query, token, limit=50):
         price_val = it.get("price", {}).get("value")
         title = it.get("title")
         weburl = it.get("itemWebUrl")
+        opts = it.get("buyingOptions", []) or []
+
         if not (price_val and title and weburl):
             continue
 
@@ -98,6 +139,9 @@ def search_ebay_api(query, token, limit=50):
             price = float(price_val)
         except Exception:
             continue
+
+        is_auction = ("AUCTION" in opts and "FIXED_PRICE" not in opts)
+
         seen_urls.add(weburl)
         seen_titles.add(norm_title)
         results.append({
@@ -106,7 +150,9 @@ def search_ebay_api(query, token, limit=50):
             "url": weburl,
             "item_id": it.get("itemId"),
             "condition": it.get("condition"),
-            "scanned_at": datetime.now().isoformat()
+            "scanned_at": datetime.now().isoformat(),
+            "buying_options": opts,
+            "is_auction": is_auction
         })
     return results
 
