@@ -48,6 +48,47 @@ Profit: ${item['estimated_profit']} | ROI: {item['roi_percent']}%
 [View Listing]({item['url']})
 """.strip()
 
+# --- Execution helpers -------------------------------------------------------
+
+def run_ebay_scan() -> bool:
+    """Run the eBay scan. Returns True if it appears to have succeeded."""
+    use_api = bool(os.getenv("EBAY_CLIENT_ID") and os.getenv("EBAY_CLIENT_SECRET"))
+    if not use_api:
+        print("ℹ️ EBAY keys not set — skipping eBay scan and using existing results.json")
+        return False
+    try:
+        print("🔁 Step 1/3: eBay scan starting…")
+        proc = subprocess.run(["python3", "ebay_scraper.py"], capture_output=True, text=True, timeout=600)
+        combined = f"{proc.stdout}\n{proc.stderr}".strip()
+        if (proc.returncode != 0) or ("OAuth" in combined) or ("invalid_client" in combined) or ("Cannot proceed without eBay access token" in combined):
+            print("ℹ️ eBay scan failed — keeping existing results.json")
+            if combined:
+                print(combined)
+            return False
+        if proc.stdout:
+            print(proc.stdout, end="")
+        if proc.stderr:
+            print(proc.stderr, end="")
+        return True
+    except Exception as e:
+        print(f"ℹ️ eBay scan error — keeping existing results.json: {e}")
+        return False
+
+
+def run_estimator() -> bool:
+    """Run the resale estimator against current results.json."""
+    try:
+        print("🔁 Step 2/3: Analysis starting…")
+        proc = subprocess.run(["python3", "resale_estimator.py"], capture_output=True, text=True, timeout=1800)
+        if proc.stdout:
+            print(proc.stdout, end="")
+        if proc.stderr:
+            print(proc.stderr, end="")
+        return proc.returncode == 0
+    except Exception as e:
+        print(f"⚠️ Analysis error: {e}")
+        return False
+
 def build_daily_summary(report_path: str = "flip_report.json", results_path: str = "results.json") -> str:
     analyzed = 0
     flips = []
@@ -168,27 +209,13 @@ if __name__ == "__main__":
     except Exception:
         print("ℹ️ No valid watchlist.json found. Using defaults in ebay_scraper.py")
 
-    use_api = bool(os.getenv("EBAY_CLIENT_ID") and os.getenv("EBAY_CLIENT_SECRET"))
-    if use_api:
-        try:
-            proc = subprocess.run(["python3", "ebay_scraper.py"], capture_output=True, text=True, timeout=300)
-            combined = f"{proc.stdout}\n{proc.stderr}".strip()
-            if (proc.returncode != 0) or ("OAuth" in combined) or ("invalid_client" in combined) or ("Cannot proceed without eBay access token" in combined):
-                print("ℹ️ eBay scan failed — skipping fresh scan and using existing results.json")
-                if combined:
-                    print(combined)
-            else:
-                if proc.stdout:
-                    print(proc.stdout, end="")
-                if proc.stderr:
-                    print(proc.stderr, end="")
-        except Exception as e:
-            print(f"ℹ️ eBay scan error — skipping fresh scan and using existing results.json: {e}")
-    else:
-        print("ℹ️ EBAY keys not set — skipping eBay scan and using existing results.json")
+    # --- Strict run order: Scan → Analyze → Summary ---
+    scanned = run_ebay_scan()
 
-    # Always run estimator (it will use category_results.json or results.json if present)
-    os.system("python3 resale_estimator.py")
+    # Run estimator on whatever results.json is present (fresh if scanned, stale otherwise)
+    _ = run_estimator()
+
+    print("🔁 Step 3/3: Building daily summary…")
 
     try:
         summary_msg = build_daily_summary()
