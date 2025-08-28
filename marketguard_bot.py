@@ -212,7 +212,8 @@ if __name__ == "__main__":
     # --- Strict run order: Scan → Analyze → Summary ---
     scanned = run_ebay_scan()
 
-    # Run estimator on whatever results.json is present (fresh if scanned, stale otherwise)
+    # Run estimator on whatever results.js
+    # on is present (fresh if scanned, stale otherwise)
     _ = run_estimator()
 
     print("🔁 Step 3/3: Building daily summary…")
